@@ -1,0 +1,75 @@
+通过任意文件下载找到了mysql的备份，表类型是独享式innodb，由一个frm文件和一个ibd文件组成。
+本以为直接复制到本地的mysql数据目录中即可恢复数据，但在查询时却发现并不如所愿：
+[code]
+mysql> select * from admin;
+ERROR 1146 (42S02): Table 'test.admin' doesn't exist
+mysql> show tables;
++----------------+
+| Tables_in_test |
++----------------+
+| admin          |
++----------------+
+1 row in set (0.00 sec)
+[/code]
+查找资料得知，innodb的表信息存放于datadir下面的ib_logfile*与ibdata1文件内。而由于事务的存在，这些文件在复制后并不能还原。
+由于独享式innodb的数据实际上都保存在ibd文件内，于是尝试直接从ibd文件内恢复数据。最后在stackexchange(http://dba.stackexchange.com/questions/57120/recover-mysql-database-from-data-folder-without-ibdata1-from-ibd-files)找到了老外的一个思路：
+[code]
+1.使用mysqlfrm工具将frm转换为建表语句
+2.创建空表
+3.释放表空间
+4.复制ibd文件，还原表空间
+[/code]
+从http://dev.mysql.com/downloads/utilities/下载了mysqlfrm工具，执行时发现速度非常慢，同时不支持2003。于是下载其源码，发现其原理大致如下：
+[code]
+1.修改frm头部标志位为_DB_TYPE_HEAP，表示内存表
+2.修改frm文件中保存的表引擎名称为MEMORY
+3.复制文件到数据目录，执行show create table还原sql
+4.替换语句中的MEMORY为原始引擎
+[/code]
+对照以上原理，修改成了速度很快的c#版本。
+使用工具进行测试，可以成功的还原数据，但操作非常麻烦，为了便捷操作最后写了这个工具批量恢复。
+本地使用了十余个表进行了测试，总数据条数大概五百万条，没有出现任何问题。
+
+附件内InnoDBRestore.exe是编译好的恢复工具，需要.net 4.0与mysql 5.6环境，命令行如下：
+[code]
+InnoDBRepair <username> <password> <port> <srcdir> <destDB>
+[/code]
+例如：
+[code]
+InnoDBRepair root pass 3306 c:\dbcopy my_database
+[/code]
+会将c:\dbcopy目录下所有的innodb和myiasm表还原到本地mysql的my_database数据库中，mysql必须是5.6或更高版本才能成功还原。
+其源码为InnoDBRestore.cs，编译命令行：
+[code]
+csc /r:mysql.data.dll InnoDBRestore.cs
+[/code]
+务必使用.net 4.0进行编译。
+
+MySqlFrm.exe是c#版本的frm转sql工具，需要.net 4.0与mysql环境，命令行如下：
+[code]
+mysqlfrm <username> <password> <port> <srcdir>
+[/code]
+例如：
+[code]
+mysqlfrm root pass 3306 c:\dbcopy
+[/code]
+会将c:\dbcopy目录下所有的frm转换为同名的建表sql并保存在frm文件所在目录(需要借助本地mysql进行转换)。
+其源码为mysqlfrm.cs，编译命令行：
+[code]
+csc /r:mysql.data.dll mysqlfrm.cs
+[/code]
+同样务必使用.net 4.0进行编译。
+
+关于工具的利用：
+1.在任意文件下载中可以尝试直接下载mysql的数据文件进行还原；mysql注入时可以load_file读取frm来偷懒，确定表并不是很大的时候(例如管理员表)甚至可以直接读取文件之后恢复。
+2.脱裤的时候可以不管表类型直接打包了，比mysqldump快得多。innodb表压缩率在20%左右，打包下来并不会很大。
+3.还原崩溃的mysql数据。
+
+已知错误信息：
+[code]
+ERROR 1030 (HY000): Got error -1 from storage engine
+[/code]
+换用高版本的mysql进行恢复，推荐使用5.6.24版本。
+若出现此错误信息，务必手动删除@@datadir下刚刚指定的目标数据库，否则mysql服务停止后将无法启动。
+
+(不一定有用但可能解决大问题的工具，留着备用吧)
